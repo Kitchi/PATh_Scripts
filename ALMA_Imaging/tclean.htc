@@ -1,0 +1,32 @@
+# tclean.htc : Run tclean on the input ALMA data
+
+gridder             	 = mosaic
+imsize              	 = 8192
+cell                	 = 0.004arcsec
+stokes              	 = I
+niter               	 = 100000
+usemask             	 = auto-multithresh
+threshold           	 = 2mJy
++SingularityImage   	 = "osdf:///path-facility/data/srikrishna.sekhar/containers/casa-6.6.0-modular.sif"
++WantOSPool		 = true
+
+
+executable 		 = tclean.py
+# Pass in command line args - params from tclean_params.htc
+arguments 		 = "$(input_data) --jobid $(Process) --gridder $(gridder) --imsize $(imsize) --cell $(cell) --stokes $(stokes) --niter $(niter) --usemask $(usemask) --threshold $(threshold)"
+
+transfer_input_files 	= $(input_data)
+should_transfer_files	= YES
+when_to_transfer_output	= ON_EXIT_OR_EVICT
+
+request_cpus		= 1
+request_memory 		= 50G
+request_disk		= 100G
+
+max_retries		= 2
+log			= tclean_$(Process).log
+output			= tclean_$(Process).out
+error			= tclean_$(Process).err
+
+# Loop over every line and queue up files
+queue input_data from input_files.txt
