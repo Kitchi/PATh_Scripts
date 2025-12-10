@@ -47,8 +47,10 @@ if __name__ == '__main__':
     #print('---------------------------------------')
     #sys.stdout.flush()
 
+    # Create output directory for all output files
+    os.makedirs('output_data', exist_ok=True)
 
-    fptr = open(f'tclean_{args.jobid}_timing.txt', 'w')
+    fptr = open(f'output_data/tclean_{args.jobid}_timing.txt', 'w')
     fptr.write(f"#untar_beg untar_end untar_duration tclean_beg tclean_end tclean_duration\n")
 
     for nn, infile in enumerate(inpfiles):
@@ -100,8 +102,8 @@ if __name__ == '__main__':
         print(f"End tclean {tclean_end}")
         print(f"Imaging {input_MS} took {tclean_end-tclean_beg:.2f}s")
 
-        np.save(imagename + '_retdict.npy', retdict)
-        fitsimage = imagename + '.fits'
+        np.save(f'output_data/{imagename}_retdict.npy', retdict)
+        fitsimage = f'output_data/{imagename}.fits'
         exportfits(imagename=imagename+'.image', fitsimage=fitsimage)
         print("Finished exporting FITS file")
 
@@ -117,8 +119,8 @@ if __name__ == '__main__':
         if os.path.exists(input_MS + '.tar.gz'):
             os.remove(input_MS + '.tar.gz')
 
-        if os.path.exists(imagename + '.fits'):
-            os.remove(imagename + '.fits')
+        #if os.path.exists(imagename + '.fits'):
+        #    os.remove(imagename + '.fits')
 
         #if os.path.exists(imagename + '_retdict.npy'):
         #    os.remove(imagename + '_retdict.npy')
@@ -127,4 +129,15 @@ if __name__ == '__main__':
             shutil.rmtree(input_MS)
 
     fptr.close()
+
+    # Compress output_data/ directory into output.tar.gz
+    print("Compressing output_data/ to output.tar.gz...")
+    with tarfile.open('output.tar.gz', 'w:gz') as tar:
+        tar.add('output_data', arcname='output_data')
+    print("Compression complete")
+
+    # Remove output_data/ directory to save space
+    if os.path.exists('output_data'):
+        shutil.rmtree('output_data')
+        print("Removed output_data/ directory")
 
