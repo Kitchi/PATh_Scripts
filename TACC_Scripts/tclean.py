@@ -1,115 +1,65 @@
 #!/usr/bin/env python
 
 import os
-import math
 import numpy as np
 import shutil
 import argparse
-from multiprocessing import Pool
 from casatasks import tclean, exportfits, casalog
-from casatools import msmetadata
+logfile = casalog.logfile()
 
-msmd = msmetadata()
-
-
-def get_msmd(msname):
-    msmd.open(msname)
-    fieldnames = msmd.fieldnames()
-    nscan_per_field = [len(msmd.scansforfield(ff)) for ff in fieldnames]
-    target_field = fieldnames[np.argmax(nscan_per_field)]
-    target_spws = msmd.spwsforfield(target_field)
-    nchan_per_spw = [msmd.nchan(ss) for ss in target_spws]
-    msmd.close()
-    return target_spws, nchan_per_spw
-
-
-def image_channel(work_item):
-    msname, spw, chan, global_idx, imagename_base, imsize, cell, gridder, stokes, niter, usemask, threshold = work_item
-
-    imagename = f"{imagename_base}_chan_{global_idx:05d}"
-
-    retdict = tclean(
-        vis=msname,
-        imagename=imagename,
-        imsize=imsize,
-        cell=cell,
-        specmode='mfs',
-        selectdata=True,
-        spw=f"{spw}:{chan}",
-        usemask=usemask,
-        stokes=stokes,
-        gridder=gridder,
-        niter=niter,
-        threshold=threshold,
-        parallel=False,
-        fullsummary=True,
-    )
-
-    np.save(imagename + '_retdict.npy', retdict)
-    exportfits(imagename=imagename + '.image', fitsimage=imagename + '.fits', overwrite=True)
-
-    for ext in ['.psf', '.residual', '.sumwt', '.weight', '.pb', '.image', '.model', '.mask']:
-        impath = imagename + ext
-        if os.path.exists(impath):
-            shutil.rmtree(impath)
-
-    return global_idx
+from astropy.io import fits
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('input_MS', type=str)
-    parser.add_argument('--gridder', type=str, default='standard')
-    parser.add_argument('--imsize', type=int, default=128)
-    parser.add_argument('--cell', type=str, default='0.004arcsec')
-    parser.add_argument('--stokes', type=str, default='I')
-    parser.add_argument('--niter', type=int, default=0)
-    parser.add_argument('--usemask', type=str, default='user')
-    parser.add_argument('--threshold', type=str, default='0.0mJy')
-    parser.add_argument('--mem_per_chan', type=float, default=8.0, help='GB per tclean process')
-    parser.add_argument('--total_ram', type=float, default=128.0, help='Total node RAM in GB')
-    parser.add_argument('--total_cores', type=int, default=144, help='Total cores on node')
+
+    description = "Image each selected channel, reading from the split out MS. "\
+    "Since this script is run independently of the split script, the same split "\
+    "parameters need to be passed in to reconstruct the output image file name"
+
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument('input_MS', type=str, help='File to split')
+    parser.add_argument('--channel_number', type=int, help='Channel number to split')
+    parser.add_argument('--nchannels', type=int, default=1, help='Number of channels to split')
+    parser.add_argument('--field', type=int, default=1, help='Field index')
+    parser.add_argument('--spw', type=int, default=0, help='SPW from which to split the channels')
+    parser.add_argument('--gridder', type=str, default='standard', help='Gridder to use')
+    parser.add_argument('--imsize', type=int, default=128, help='Image size in pixels')
+    parser.add_argument('--cell', type=str, default='0.004arcsec', help='Cell size')
+    parser.add_argument('--stokes', type=str, default='I', help='Stokes parameters to image')
+    parser.add_argument('--niter', type=int, default=0, help='Number of iterations')
+    parser.add_argument('--usemask', type=str, default='user', help='Masking mode')
+    parser.add_argument('--threshold', type=str, default='0.0mJy', help='Threshold for cleaning')
     args = parser.parse_args()
 
-    job_id = os.environ.get('SLURM_ARRAY_JOB_ID', os.environ.get('SLURM_JOB_ID', 'local'))
-    task_id = int(os.environ.get('SLURM_ARRAY_TASK_ID', 0))
-    task_count = int(os.environ.get('SLURM_ARRAY_TASK_COUNT', 1))
-
-    os.makedirs('logs', exist_ok=True)
-    casalog.setlogfile(f"logs/{os.environ.get('SLURM_JOB_NAME', 'tclean')}_{job_id}_{task_id}.casa")
-
-    n_parallel = int(args.total_ram // args.mem_per_chan)
-    omp_threads = max(1, args.total_cores // n_parallel)
-    os.environ['OMP_NUM_THREADS'] = str(omp_threads)
+    #casalog.setlogfile('logs/{SLURM_JOB_NAME}_{SLURM_JOB_ID}.casa'.format(**os.environ))
 
     msname = args.input_MS
-    target_spws, nchan_per_spw = get_msmd(msname)
+    # Assume SLURM_ARRAY_JOB_ID is passed in as --channel-number
+    outputvis = os.path.basename(msname).replace('.ms', f'_spw_{args.spw:02d}_channel_{args.channel_number:04d}.ms')
+    imagename = outputvis.strip('.ms')
 
-    flat_channels = []
-    for spw, nchan in zip(target_spws, nchan_per_spw):
-        for c in range(nchan):
-            flat_channels.append((spw, c, len(flat_channels)))
+    chan = args.channel_number
+    chan_beg = chan * args.nchannels
+    chan_end = chan_beg + args.nchannels - 1
 
-    total_channels = len(flat_channels)
-    total_batches = math.ceil(total_channels / n_parallel)
-    imagename_base = os.path.basename(msname).replace('.ms', '')
+    retdict = tclean(vis=msname, imagename=imagename, imsize=args.imsize, cell=args.cell, specmode='mfs',
+           selectdata=True, field=str(args.field), spw=f"{args.spw}:{chan_beg}~{chan_end}", usemask=args.usemask,
+           stokes=args.stokes,gridder=args.gridder, niter=args.niter, threshold=args.threshold, parallel=False,
+	   fullsummary=True)
 
-    my_batches = [b for b in range(total_batches) if b % task_count == task_id]
+    np.save(imagename + '_retdict.npy', retdict)
 
-    print(f"task {task_id}/{task_count}: {total_channels} channels, {n_parallel} parallel, "
-          f"{omp_threads} OMP threads, {len(my_batches)}/{total_batches} batches assigned")
+    exportfits(imagename=imagename+'.image', fitsimage=imagename+'.fits', overwrite=True)
+    # Zip up the cube to save space - astropy.fits should be able to handle gz FITS for concat
+    #os.system(f'gzip {imagename}.fits\n')
 
-    for batch_idx in my_batches:
-        start = batch_idx * n_parallel
-        end = min(start + n_parallel, total_channels)
-        batch = flat_channels[start:end]
+    # Clean up the intermediate files
+    exts = ['.psf', '.residual', '.sumwt', '.weight', '.pb', '.image', '.model', '.ms', '.mask']
+    for ext in exts:
+        imname = imagename + ext
+        if os.path.exists(imname):
+            shutil.rmtree(imname)
 
-        work_items = [
-            (msname, spw, chan, gidx, imagename_base,
-             args.imsize, args.cell, args.gridder, args.stokes,
-             args.niter, args.usemask, args.threshold)
-            for spw, chan, gidx in batch
-        ]
+    #if os.path.exists(imagename+'.fits'):
+    #    os.remove(imagename+'.fits')
 
-        with Pool(len(work_items)) as pool:
-            pool.map(image_channel, work_items)
