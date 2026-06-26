@@ -6,6 +6,7 @@ import shutil
 import argparse
 from casatasks import tclean, exportfits, casalog
 logfile = casalog.logfile()
+casalog.filter('DEBUG2')
 
 
 if __name__ == '__main__':
@@ -42,12 +43,12 @@ if __name__ == '__main__':
 
     imagename = f"{imagename_base}_spw_{args.spw:02d}_channel_{args.channel_number:04d}"
 
-    chan_beg = args.channel_number * args.nchannels
+    chan_beg = args.channel_number
+    chan_end = args.channel_number + args.nchannels
 
     retdict = tclean(vis=args.input_MS, imagename=imagename, imsize=args.imsize,
-            cell=args.cell, specmode='cube', selectdata=True,
-            field=str(args.field), spw=f"{args.spw}", start=f"{chan_beg}",
-            nchan=f"{args.nchannels}", width=1, outframe="LSRK",
+            cell=args.cell, specmode='mfs', selectdata=True,
+            field=str(args.field), spw=f"{args.spw}:{chan_beg}~{chan_end}", start=f"{chan_beg}",
             interpolation='nearest', usemask=args.usemask,
             stokes=args.stokes,gridder=args.gridder, niter=args.niter,
             threshold=args.threshold, parallel=False, fullsummary=True)
