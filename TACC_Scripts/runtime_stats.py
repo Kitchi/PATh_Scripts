@@ -14,13 +14,20 @@ When given a directory, every file is scanned for lines like
 (equivalent to the original grep|awk pipeline), and times.txt is written
 into that directory before stats are computed.
 
-- average runtime: mean of (end - start) per job
-- cumulative runtime: last end - first start
+Output:
+    - mean runtime +/- std
+    - median runtime +/- std via MAD
+    - cumulative runtime: last end - first start
 """
+import argparse
+import concurrent.futures
 import os
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
 
 FMT = "%Y-%m-%d %H:%M:%S.%f"
 DT = r"(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2}\.\d+)"
@@ -30,42 +37,58 @@ PATTERN = re.compile(
 )
 
 
-def build_times(log_dir):
-    """Scan log_dir, write times.txt, return its path.
+def _scan_file(path):
+    """Return list of (start_str, end_str) tuples found in one file."""
+    results = []
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                m = PATTERN.search(line)
+                if m:
+                    results.append(m.groups())
+    except OSError:
+        pass
+    return results
 
-    Logs are streamed line-by-line and results written incrementally, so
-    memory stays flat regardless of log size or job count.
-    """
+
+def build_times(log_dir, workers=8):
+    """Scan log_dir multithreaded, write times.txt, return its path."""
     out_path = os.path.join(log_dir, "times.txt")
     out_abs = os.path.abspath(out_path)
-    count = 0
+
+    log_files = []
+    for name in sorted(os.listdir(log_dir)):
+        path = os.path.join(log_dir, name)
+        if (
+            not os.path.isfile(path)
+            or os.path.abspath(path) == out_abs
+            or not name.endswith(".casa")
+        ):
+            continue
+        log_files.append(path)
+
+    all_records = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as exc:
+        futs = [exc.submit(_scan_file, p) for p in log_files]
+        for fut in concurrent.futures.as_completed(futs):
+            all_records.extend(fut.result())
+
+    all_records.sort()
     with open(out_path, "w") as out:
-        for name in sorted(os.listdir(log_dir)):
-            path = os.path.join(log_dir, name)
-            if not os.path.isfile(path) or os.path.abspath(path) == out_abs:
-                continue
-            if not name.endswith(".log"):
-                continue
-            try:
-                with open(path, errors="replace") as f:
-                    for line in f:
-                        m = PATTERN.search(line)
-                        if m:
-                            out.write("\t".join(m.groups()) + "\n")
-                            count += 1
-            except OSError:
-                continue
-    print(f"wrote {count} jobs to {out_path}")
+        for groups in all_records:
+            out.write("\t".join(groups) + "\n")
+
+    print(f"wrote {len(all_records)} jobs to {out_path}")
     return out_path
 
 
 def parse(path):
-    """Yield (start, end) per job. Streams; holds one line at a time."""
+    """Yield (start, end) per job."""
     with open(path) as f:
         for lineno, line in enumerate(f, 1):
             parts = line.split()
             if len(parts) < 4:
-                continue  # skip blank/malformed lines
+                continue
             try:
                 start = datetime.strptime(f"{parts[0]} {parts[1]}", FMT)
                 end = datetime.strptime(f"{parts[2]} {parts[3]}", FMT)
@@ -83,30 +106,48 @@ def fmt(td):
 
 
 def main():
-    target = sys.argv[1] if len(sys.argv) > 1 else "times.txt"
-    path = build_times(target) if os.path.isdir(target) else target
+    parser = argparse.ArgumentParser(description="Compute average and cumulative runtime of tclean jobs.")
+    parser.add_argument(
+        "target", nargs="?", default="times.txt",
+        help="Path to a times.txt file or a directory of .casa logs (default: times.txt)",
+    )
+    parser.add_argument(
+        "-j", "--jobs", type=int, default=8,
+        help="Number of parallel threads for scanning log files (default: 8)",
+    )
+    args = parser.parse_args()
 
-    n = 0
-    total = timedelta()
-    first_start = None
-    last_end = None
+    target = args.target
+    if os.path.isdir(target):
+        path = build_times(target, workers=args.jobs)
+    elif os.path.isfile(target):
+        path = target
+    else:
+        sys.exit(f"error: '{target}' not found.\nProvide a directory of .casa logs or an existing times.txt file.")
+
+    starts, ends = [], []
     for start, end in parse(path):
-        n += 1
-        total += end - start
-        if first_start is None or start < first_start:
-            first_start = start
-        if last_end is None or end > last_end:
-            last_end = end
+        starts.append(start)
+        ends.append(end)
 
-    if n == 0:
+    if not starts:
         sys.exit("no valid jobs found")
 
-    avg = total / n
-    cumulative = last_end - first_start
+    df = pd.DataFrame({"start": pd.to_datetime(starts), "end": pd.to_datetime(ends)})
+    df["duration"] = (df["end"] - df["start"]).dt.total_seconds()
 
-    print(f"jobs:               {n}")
-    print(f"average runtime:    {fmt(avg)}")
-    print(f"cumulative runtime: {fmt(cumulative)}")
+    durations = df["duration"].values
+    mean = np.mean(durations)
+    std = np.std(durations, ddof=1)
+    median = np.median(durations)
+    mad = np.median(np.abs(durations - median))
+
+    cumulative = (df["end"].max() - df["start"].min()).total_seconds()
+
+    print(f"jobs:               {len(df)}")
+    print(f"mean runtime:       {fmt(pd.Timedelta(seconds=mean))}  +/- {std:.3f}s")
+    print(f"median runtime:     {fmt(pd.Timedelta(seconds=median))}  +/- {mad:.3f}s")
+    print(f"cumulative runtime: {fmt(pd.Timedelta(seconds=cumulative))}")
 
 
 if __name__ == "__main__":

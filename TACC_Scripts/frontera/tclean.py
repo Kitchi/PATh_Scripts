@@ -4,8 +4,8 @@ import os
 import numpy as np
 import shutil
 import argparse
+import uuid
 from casatasks import tclean, exportfits, casalog
-logfile = casalog.logfile()
 casalog.filter('DEBUG2')
 
 
@@ -30,9 +30,13 @@ if __name__ == '__main__':
     parser.add_argument('--niter', type=int, default=0, help='Number of iterations')
     parser.add_argument('--usemask', type=str, default='user', help='Masking mode')
     parser.add_argument('--threshold', type=str, default='0.0mJy', help='Threshold for cleaning')
+    parser.add_argument('--jobid', type=int, default=0, help='PyLauncher JOBID')
     args = parser.parse_args()
 
-    #casalog.setlogfile('logs/{SLURM_JOB_NAME}_{SLURM_JOB_ID}.casa'.format(**os.environ))
+    #random_str = uuid.uuid4().hex
+
+    casalog.setlogfile(f'logs/tclean_{args.jobid}.casa'.format(**os.environ))
+    casalog.filter('DEBUG2')
 
     # Determine imagename base
     if args.imagename:
